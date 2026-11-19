@@ -19,6 +19,9 @@ nohup ~/aistudio-api/.venv/bin/python ~/oai-bridge.py >~/oai-bridge.log 2>&1 &
 sleep 1; curl -s 127.0.0.1:8765/health
 ```
 
+- 国内下载 GitHub 文件常连不上，记得开梯子
+- aistudio-api 没装在 `~/aistudio-api` 的，把第二行里的 python 路径改成你自己的
+
 最后一行看到 `"ok": true` 就是起来了。以后每次打开 Termux 它会自己起，日志在 `~/oai-bridge.log`。
 
 ## 电脑上（Linux / macOS / Windows）
