@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""OpenAI chat/completions -> Gemini generateContent. Python 3 stdlib only."""
+import json, os, time, uuid, urllib.request, urllib.error
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+UPSTREAM = os.environ.get("OAI_BRIDGE_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
+HOST = os.environ.get("OAI_BRIDGE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("OAI_BRIDGE_PORT", "8081"))
+SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in (
+    "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",
+    "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT")]
+FINISH = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter",
+          "PROHIBITED_CONTENT": "content_filter", "BLOCKLIST": "content_filter",
+          "RECITATION": "content_filter", "SPII": "content_filter"}
+
+
+def to_parts(content):
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"text": content}] if content else []
+    parts = []
+    for p in content:
+        if p.get("type") == "text" and p.get("text"):
+            parts.append({"text": p["text"]})
+        elif p.get("type") == "image_url":
+            url = (p.get("image_url") or {}).get("url", "")
+            if url.startswith("data:") and ";base64," in url:
+                mime, data = url[5:].split(";base64,", 1)
+                parts.append({"inlineData": {"mimeType": mime, "data": data}})
+    return parts
+
+
+def to_gemini(body):
+    system, contents = [], []
+    for m in body.get("messages", []):
+        role, parts = m.get("role"), to_parts(m.get("content"))
+        if not parts:
+            continue
+        if role in ("system", "developer"):
+            system.extend(parts)
+            continue
+        g_role = "model" if role == "assistant" else "user"
+        if contents and contents[-1]["role"] == g_role:
+            contents[-1]["parts"].extend(parts)
+        else:
+            contents.append({"role": g_role, "parts": parts})
+    if not contents:
+        contents, system = [{"role": "user", "parts": system or [{"text": "."}]}], []
+    req = {"contents": contents, "safetySettings": SAFETY}
+    if system:
+        req["systemInstruction"] = {"parts": system}
+    cfg = {}
+    for o, g in (("temperature", "temperature"), ("top_p", "topP"), ("top_k", "topK")):
+        if body.get(o) is not None:
+            cfg[g] = body[o]
+    mt = body.get("max_completion_tokens") or body.get("max_tokens")
+    if mt:
+        cfg["maxOutputTokens"] = mt
+    stop = body.get("stop")
+    if stop:
+        cfg["stopSequences"] = [stop] if isinstance(stop, str) else stop
+    if cfg:
+        req["generationConfig"] = cfg
+    return req
+
+
+def from_gemini(g):
+    cands = g.get("candidates") or []
+    if not cands:
+        reason = (g.get("promptFeedback") or {}).get("blockReason", "")
+        return "", "content_filter" if reason else "stop"
+    c = cands[0]
+    text = "".join(p.get("text", "") for p in (c.get("content") or {}).get("parts", [])
+                   if not p.get("thought"))
+    return text, FINISH.get(c.get("finishReason", "STOP"), "stop")
+
+
+def usage(g):
+    u = g.get("usageMetadata") or {}
+    p, c = u.get("promptTokenCount", 0), u.get("candidatesTokenCount", 0)
+    return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": u.get("totalTokenCount", p + c)}
+
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def key(self):
+        auth = self.headers.get("Authorization", "")
+        return auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-goog-api-key", "")
+
+    def call(self, method, path, payload=None):
+        data = json.dumps(payload).encode() if payload is not None else None
+        r = urllib.request.Request(UPSTREAM + path, data=data, method=method,
+                                   headers={"Content-Type": "application/json", "x-goog-api-key": self.key()})
+        try:
+            with urllib.request.urlopen(r, timeout=600) as resp:
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except ValueError:
+                return e.code, {"error": {"message": raw.decode("utf-8", "replace")}}
+        except (urllib.error.URLError, OSError) as e:
+            return 502, {"error": {"message": f"upstream {UPSTREAM} unreachable: {e}"}}
+
+    def send(self, code, obj):
+        b = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(b)
+
+    def err(self, code, g):
+        e = g.get("error") if isinstance(g.get("error"), dict) else {"message": json.dumps(g, ensure_ascii=False)}
+        self.send(code, {"error": {"message": e.get("message", ""), "type": "upstream_error", "code": code}})
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        for k, v in (("Access-Control-Allow-Origin", "*"), ("Access-Control-Allow-Headers", "*"),
+                     ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"), ("Content-Length", "0")):
+            self.send_header(k, v)
+        self.end_headers()
+
+    def do_GET(self):
+        path = self.path.split("?")[0].rstrip("/")
+        if path in ("/v1/models", "/models"):
+            code, g = self.call("GET", "/v1beta/models")
+            if code != 200:
+                return self.err(code, g)
+            ids = [m.get("name", "").removeprefix("models/") for m in g.get("models", [])]
+            return self.send(200, {"object": "list", "data": [
+                {"id": i, "object": "model", "created": 0, "owned_by": "google"} for i in ids if i]})
+        if path in ("", "/health"):
+            return self.send(200, {"ok": True, "upstream": UPSTREAM})
+        self.send(404, {"error": {"message": "not found"}})
+
+    def do_POST(self):
+        path = self.path.split("?")[0].rstrip("/")
+        if path not in ("/v1/chat/completions", "/chat/completions"):
+            return self.send(404, {"error": {"message": "not found"}})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        except ValueError:
+            return self.send(400, {"error": {"message": "bad json"}})
+        model = str(body.get("model") or "gemini-2.5-flash").removeprefix("models/")
+        code, g = self.call("POST", f"/v1beta/models/{model}:generateContent", to_gemini(body))
+        if code != 200:
+            return self.err(code, g)
+        text, finish = from_gemini(g)
+        cid, now = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
+        if not body.get("stream"):
+            return self.send(200, {"id": cid, "object": "chat.completion", "created": now, "model": model,
+                                   "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                                                "finish_reason": finish}], "usage": usage(g)})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.close_connection = True
+        base = {"id": cid, "object": "chat.completion.chunk", "created": now, "model": model}
+        for delta, fin in (({"role": "assistant", "content": text}, None), ({}, finish)):
+            chunk = dict(base, choices=[{"index": 0, "delta": delta, "finish_reason": fin}])
+            self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+    def log_message(self, fmt, *args):
+        print(time.strftime("%H:%M:%S"), self.command, self.path, *args[1:2], flush=True)
+
+
+if __name__ == "__main__":
+    print(f"oai-bridge on http://{HOST}:{PORT}/v1 -> {UPSTREAM}", flush=True)
+    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
