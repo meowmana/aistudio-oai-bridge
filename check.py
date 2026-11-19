@@ -58,6 +58,11 @@ try:
     assert g["generationConfig"]["maxOutputTokens"] == 9
     code, out = req("/chat/completions", {"model": "gemini-x", "messages": msgs, "stream": True})
     assert code == 200 and '"content": "hi"' in out and out.rstrip().endswith("data: [DONE]"), out
+    r = urllib.request.Request(B + "/models", method="OPTIONS",
+                               headers={"Origin": "http://127.0.0.1:8000", "Access-Control-Request-Method": "GET",
+                                        "Access-Control-Request-Headers": "authorization,content-type"})
+    with urllib.request.urlopen(r) as x:
+        assert "authorization" in x.headers.get("Access-Control-Allow-Headers", "").lower()
     print("all ok")
 finally:
     br.terminate()

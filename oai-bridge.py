@@ -120,8 +120,11 @@ class H(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        for k, v in (("Access-Control-Allow-Origin", "*"), ("Access-Control-Allow-Headers", "*"),
-                     ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"), ("Content-Length", "0")):
+        # "*" in Allow-Headers does not cover Authorization, so echo what the browser asked for
+        asked = self.headers.get("Access-Control-Request-Headers") or "Authorization, Content-Type"
+        for k, v in (("Access-Control-Allow-Origin", "*"), ("Access-Control-Allow-Headers", asked),
+                     ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+                     ("Access-Control-Allow-Private-Network", "true"), ("Content-Length", "0")):
             self.send_header(k, v)
         self.end_headers()
 
