@@ -21,6 +21,17 @@ curl -s 127.0.0.1:8081/health
 
 最后一行看到 `"ok": true` 就是起来了。以后每次打开 Termux 它会自己起，日志在 `~/oai-bridge.log`。
 
+## 电脑上（Linux / macOS / Windows）
+
+程序本身不挑系统，有 Python 3.9 以上就能跑。下载 `oai-bridge.py`，在它所在的文件夹里：
+
+```sh
+python3 oai-bridge.py      # Linux / macOS
+python oai-bridge.py       # Windows
+```
+
+看到 `oai-bridge on http://127.0.0.1:8081/v1` 就是起来了，窗口别关。aistudio-api 不在本机 8080 的话，先设 `OAI_BRIDGE_UPSTREAM` 指过去（Windows PowerShell 里是 `$env:OAI_BRIDGE_UPSTREAM="http://..."`）。
+
 ## 插件里怎么填
 
 - 接口地址：`http://127.0.0.1:8081/v1`
