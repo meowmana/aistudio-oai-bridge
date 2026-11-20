@@ -150,15 +150,31 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             return self.send(400, {"error": {"message": "bad json"}})
         model = str(body.get("model") or "gemini-2.5-flash").removeprefix("models/")
+        if body.get("stream"):
+            return self.stream(model, to_gemini(body))
         code, g = self.call("POST", f"/v1beta/models/{model}:generateContent", to_gemini(body))
         if code != 200:
             return self.err(code, g)
         text, finish = from_gemini(g)
-        cid, now = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
-        if not body.get("stream"):
-            return self.send(200, {"id": cid, "object": "chat.completion", "created": now, "model": model,
-                                   "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                                                "finish_reason": finish}], "usage": usage(g)})
+        self.send(200, {"id": "chatcmpl-" + uuid.uuid4().hex[:24], "object": "chat.completion",
+                        "created": int(time.time()), "model": model,
+                        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                                     "finish_reason": finish}], "usage": usage(g)})
+
+    def stream(self, model, payload):
+        r = urllib.request.Request(f"{UPSTREAM}/v1beta/models/{model}:streamGenerateContent?alt=sse",
+                                   data=json.dumps(payload).encode(), method="POST",
+                                   headers={"Content-Type": "application/json", "x-goog-api-key": self.key()})
+        try:
+            resp = urllib.request.urlopen(r, timeout=600)
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return self.err(e.code, json.loads(raw))
+            except ValueError:
+                return self.err(e.code, {"error": {"message": raw.decode("utf-8", "replace")}})
+        except (urllib.error.URLError, OSError) as e:
+            return self.err(502, {"error": {"message": f"upstream {UPSTREAM} unreachable: {e}"}})
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -166,12 +182,41 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.close_connection = True
-        base = {"id": cid, "object": "chat.completion.chunk", "created": now, "model": model}
-        for delta, fin in (({"role": "assistant", "content": text}, None), ({}, finish)):
+        base = {"id": "chatcmpl-" + uuid.uuid4().hex[:24], "object": "chat.completion.chunk",
+                "created": int(time.time()), "model": model}
+
+        def emit(delta, fin=None):
             chunk = dict(base, choices=[{"index": 0, "delta": delta, "finish_reason": fin}])
             self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
-        self.wfile.write(b"data: [DONE]\n\n")
-        self.wfile.flush()
+            self.wfile.flush()
+
+        try:
+            emit({"role": "assistant", "content": ""})
+            finish = None
+            with resp:
+                for line in resp:
+                    line = line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    g = json.loads(line[5:].strip() or b"{}")
+                    if isinstance(g.get("error"), dict):
+                        emit({"content": f"[error] {g['error'].get('message', '')}"})
+                        finish = "stop"
+                        break
+                    text, fin = from_gemini(g)
+                    if text:
+                        emit({"content": text})
+                    else:
+                        # thinking chunks carry no text; a comment keeps idle clients from timing out
+                        self.wfile.write(b": thinking\n\n")
+                        self.wfile.flush()
+                    if (g.get("candidates") or [{}])[0].get("finishReason"):
+                        finish = fin
+            emit({}, finish or "stop")
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, fmt, *args):
         print(time.strftime("%H:%M:%S"), self.command, self.path, *args[1:2], flush=True)

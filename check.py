@@ -15,6 +15,14 @@ class Fake(BaseHTTPRequestHandler):
     def do_POST(self):
         seen["path"] = self.path
         seen["req"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if ":streamGenerateContent" in self.path:
+            assert "alt=sse" in self.path
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+            for c in ({"candidates": [{"content": {"parts": [{"text": "hmm", "thought": True}]}}]},
+                      {"candidates": [{"content": {"parts": [{"text": "h"}]}}]},
+                      {"candidates": [{"content": {"parts": [{"text": "i"}]}, "finishReason": "STOP"}]}):
+                self.wfile.write(f"data: {json.dumps(c)}\n\n".encode()); self.wfile.flush()
+            return
         self._s(200, {"candidates": [{"content": {"parts": [{"text": "hmm", "thought": True}, {"text": "hi"}]},
                                       "finishReason": "MAX_TOKENS"}]})
     def log_message(self, *a): pass
@@ -57,7 +65,9 @@ try:
     assert all(s["threshold"] == "BLOCK_NONE" for s in g["safetySettings"]) and len(g["safetySettings"]) == 4
     assert g["generationConfig"]["maxOutputTokens"] == 9
     code, out = req("/chat/completions", {"model": "gemini-x", "messages": msgs, "stream": True})
-    assert code == 200 and '"content": "hi"' in out and out.rstrip().endswith("data: [DONE]"), out
+    assert code == 200 and seen["path"].startswith("/v1beta/models/gemini-x:streamGenerateContent"), out
+    assert '"content": "h"' in out and '"content": "i"' in out and ": thinking" in out and "hmm" not in out, out
+    assert '"finish_reason": "stop"' in out and out.rstrip().endswith("data: [DONE]"), out
     r = urllib.request.Request(B + "/models", method="OPTIONS",
                                headers={"Origin": "http://127.0.0.1:8000", "Access-Control-Request-Method": "GET",
                                         "Access-Control-Request-Headers": "authorization,content-type"})
