@@ -62,7 +62,7 @@ try:
     g = seen["req"]
     assert seen["path"] == "/v1beta/models/gemini-x:generateContent"
     assert g["systemInstruction"] == {"parts": [{"text": "S"}]}
-    assert [c["role"] for c in g["contents"]] == ["user", "model"] and len(g["contents"][0]["parts"]) == 2
+    assert [c["role"] for c in g["contents"]] == ["user", "model", "user"] and len(g["contents"][0]["parts"]) == 2
     assert all(s["threshold"] == "BLOCK_NONE" for s in g["safetySettings"]) and len(g["safetySettings"]) == 4
     assert g["generationConfig"]["maxOutputTokens"] == 9
     code, out = req("/chat/completions", {"model": "gemini-x", "messages": msgs, "stream": True})

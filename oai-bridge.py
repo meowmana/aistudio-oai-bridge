@@ -49,6 +49,9 @@ def to_gemini(body):
             contents.append({"role": g_role, "parts": parts})
     if not contents:
         contents, system = [{"role": "user", "parts": system or [{"text": "."}]}], []
+    if contents[-1]["role"] == "model":
+        # Gemini rejects assistant prefill ("Requests ending with a model turn are not supported")
+        contents.append({"role": "user", "parts": [{"text": "Continue."}]})
     req = {"contents": contents, "safetySettings": SAFETY}
     if system:
         req["systemInstruction"] = {"parts": system}
