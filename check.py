@@ -29,7 +29,8 @@ class Fake(BaseHTTPRequestHandler):
 
 up = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
 threading.Thread(target=up.serve_forever, daemon=True).start()
-env = dict(os.environ, OAI_BRIDGE_UPSTREAM=f"http://127.0.0.1:{up.server_port}", OAI_BRIDGE_PORT="18765")
+env = dict(os.environ, OAI_BRIDGE_UPSTREAM=f"http://127.0.0.1:{up.server_port}", OAI_BRIDGE_PORT="18765",
+           http_proxy="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9", no_proxy="", NO_PROXY="")
 br = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "oai-bridge.py")],
                       env=env, stdout=subprocess.DEVNULL)
 B = "http://127.0.0.1:18765/v1"

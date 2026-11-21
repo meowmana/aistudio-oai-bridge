@@ -12,6 +12,8 @@ SAFETY = [{"category": c, "threshold": "BLOCK_NONE"} for c in (
 FINISH = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter",
           "PROHIBITED_CONTENT": "content_filter", "BLOCKLIST": "content_filter",
           "RECITATION": "content_filter", "SPII": "content_filter"}
+# upstream is local; a Clash http_proxy in the shell would otherwise swallow these requests
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def to_parts(content):
@@ -94,7 +96,7 @@ class H(BaseHTTPRequestHandler):
         r = urllib.request.Request(UPSTREAM + path, data=data, method=method,
                                    headers={"Content-Type": "application/json", "x-goog-api-key": self.key()})
         try:
-            with urllib.request.urlopen(r, timeout=600) as resp:
+            with DIRECT.open(r, timeout=600) as resp:
                 return resp.status, json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
             raw = e.read()
@@ -166,7 +168,7 @@ class H(BaseHTTPRequestHandler):
                                    data=json.dumps(payload).encode(), method="POST",
                                    headers={"Content-Type": "application/json", "x-goog-api-key": self.key()})
         try:
-            resp = urllib.request.urlopen(r, timeout=600)
+            resp = DIRECT.open(r, timeout=600)
         except urllib.error.HTTPError as e:
             raw = e.read()
             try:
