@@ -14,8 +14,8 @@ FINISH = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter",
           "RECITATION": "content_filter", "SPII": "content_filter"}
 # upstream is local; a Clash http_proxy in the shell would otherwise swallow these requests
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-# "<model>-tool" asks Gemini to hand the reply over as a function-call argument instead of plain text
-TOOL_SUFFIX = "-tool"
+# "<model>[防截断]" asks Gemini to hand the reply over as a function-call argument instead of plain text
+TOOL_SUFFIX = "[防截断]"
 REPLY_TOOL = {"name": "reply", "description": "Deliver the complete reply to the user.",
               "parameters": {"type": "object", "required": ["text"],
                              "properties": {"text": {"type": "string", "description": "The full reply, nothing omitted."}}}}

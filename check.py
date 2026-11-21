@@ -58,7 +58,7 @@ try:
         except OSError:
             time.sleep(0.1)
     code, out = req("/models")
-    assert code == 200 and [m["id"] for m in json.loads(out)["data"]] == ["gemini-x", "gemini-x-tool"], out
+    assert code == 200 and [m["id"] for m in json.loads(out)["data"]] == ["gemini-x", "gemini-x[防截断]"], out
     assert req("/models", key="nope")[0] == 401
     msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "a"},
             {"role": "user", "content": [{"type": "text", "text": "b"}]}, {"role": "assistant", "content": "c"}]
@@ -78,7 +78,7 @@ try:
     assert '"content": "hmm"' not in out and "tools" not in seen["req"], out
     o = json.loads(req("/chat/completions", {"model": "gemini-x", "messages": msgs})[1])
     assert o["choices"][0]["message"]["reasoning_content"] == "hmm", o
-    code, out = req("/chat/completions", {"model": "gemini-x-tool", "messages": msgs, "stream": True,
+    code, out = req("/chat/completions", {"model": "gemini-x[防截断]", "messages": msgs, "stream": True,
                                           "reasoning_effort": "high"})
     g = seen["req"]
     assert seen["path"].startswith("/v1beta/models/gemini-x:streamGenerateContent"), seen["path"]
