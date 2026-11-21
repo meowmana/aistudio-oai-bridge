@@ -14,6 +14,12 @@ FINISH = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter",
           "RECITATION": "content_filter", "SPII": "content_filter"}
 # upstream is local; a Clash http_proxy in the shell would otherwise swallow these requests
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# "<model>-tool" asks Gemini to hand the reply over as a function-call argument instead of plain text
+TOOL_SUFFIX = "-tool"
+REPLY_TOOL = {"name": "reply", "description": "Deliver the complete reply to the user.",
+              "parameters": {"type": "object", "required": ["text"],
+                             "properties": {"text": {"type": "string", "description": "The full reply, nothing omitted."}}}}
+REPLY_RULE = "Deliver your entire reply by calling reply(text=...). Put the complete reply in text; write nothing outside the call."
 
 
 def to_parts(content):
@@ -65,8 +71,22 @@ def to_gemini(body):
     stop = body.get("stop")
     if stop:
         cfg["stopSequences"] = [stop] if isinstance(stop, str) else stop
+    effort = str(body.get("reasoning_effort") or "").upper()
+    if effort in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
+        cfg["thinkingConfig"] = {"includeThoughts": True, "thinkingLevel": effort}
     if cfg:
         req["generationConfig"] = cfg
+    return req
+
+
+def tool_mode(model):
+    return (model.removesuffix(TOOL_SUFFIX), True) if model.endswith(TOOL_SUFFIX) else (model, False)
+
+
+def with_reply_tool(req):
+    req["tools"] = [{"functionDeclarations": [REPLY_TOOL]}]
+    req["toolConfig"] = {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["reply"]}}
+    req.setdefault("systemInstruction", {"parts": []})["parts"].append({"text": REPLY_RULE})
     return req
 
 
@@ -74,11 +94,18 @@ def from_gemini(g):
     cands = g.get("candidates") or []
     if not cands:
         reason = (g.get("promptFeedback") or {}).get("blockReason", "")
-        return "", "content_filter" if reason else "stop"
+        return "", "", "content_filter" if reason else "stop"
     c = cands[0]
-    text = "".join(p.get("text", "") for p in (c.get("content") or {}).get("parts", [])
-                   if not p.get("thought"))
-    return text, FINISH.get(c.get("finishReason", "STOP"), "stop")
+    text, thought = [], []
+    for p in (c.get("content") or {}).get("parts", []):
+        if p.get("thought"):
+            thought.append(p.get("text", ""))
+        elif isinstance(p.get("functionCall"), dict):
+            args = p["functionCall"].get("args") or {}
+            text.append(args.get("text", "") if isinstance(args, dict) else str(args))
+        else:
+            text.append(p.get("text", ""))
+    return "".join(text), "".join(thought), FINISH.get(c.get("finishReason", "STOP"), "stop")
 
 
 def usage(g):
@@ -140,8 +167,10 @@ class H(BaseHTTPRequestHandler):
             if code != 200:
                 return self.err(code, g)
             ids = [m.get("name", "").removeprefix("models/") for m in g.get("models", [])]
+            ids = [i for i in ids if i]
             return self.send(200, {"object": "list", "data": [
-                {"id": i, "object": "model", "created": 0, "owned_by": "google"} for i in ids if i]})
+                {"id": i, "object": "model", "created": 0, "owned_by": "google"}
+                for i in ids + [i + TOOL_SUFFIX for i in ids]]})
         if path in ("", "/health"):
             return self.send(200, {"ok": True, "upstream": UPSTREAM})
         self.send(404, {"error": {"message": "not found"}})
@@ -154,17 +183,20 @@ class H(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         except ValueError:
             return self.send(400, {"error": {"message": "bad json"}})
-        model = str(body.get("model") or "gemini-2.5-flash").removeprefix("models/")
+        model, tool = tool_mode(str(body.get("model") or "gemini-2.5-flash").removeprefix("models/"))
+        payload = with_reply_tool(to_gemini(body)) if tool else to_gemini(body)
         if body.get("stream"):
-            return self.stream(model, to_gemini(body))
-        code, g = self.call("POST", f"/v1beta/models/{model}:generateContent", to_gemini(body))
+            return self.stream(model, payload)
+        code, g = self.call("POST", f"/v1beta/models/{model}:generateContent", payload)
         if code != 200:
             return self.err(code, g)
-        text, finish = from_gemini(g)
+        text, thought, finish = from_gemini(g)
+        msg = {"role": "assistant", "content": text}
+        if thought:
+            msg["reasoning_content"] = thought
         self.send(200, {"id": "chatcmpl-" + uuid.uuid4().hex[:24], "object": "chat.completion",
                         "created": int(time.time()), "model": model,
-                        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                                     "finish_reason": finish}], "usage": usage(g)})
+                        "choices": [{"index": 0, "message": msg, "finish_reason": finish}], "usage": usage(g)})
 
     def stream(self, model, payload):
         r = urllib.request.Request(f"{UPSTREAM}/v1beta/models/{model}:streamGenerateContent?alt=sse",
@@ -208,11 +240,13 @@ class H(BaseHTTPRequestHandler):
                         emit({"content": f"[error] {g['error'].get('message', '')}"})
                         finish = "stop"
                         break
-                    text, fin = from_gemini(g)
+                    text, thought, fin = from_gemini(g)
+                    if thought:
+                        emit({"reasoning_content": thought})
                     if text:
                         emit({"content": text})
-                    else:
-                        # thinking chunks carry no text; a comment keeps idle clients from timing out
+                    if not text and not thought:
+                        # a comment keeps idle clients from timing out
                         self.wfile.write(b": thinking\n\n")
                         self.wfile.flush()
                     if (g.get("candidates") or [{}])[0].get("finishReason"):

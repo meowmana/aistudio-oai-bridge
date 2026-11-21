@@ -15,6 +15,13 @@ class Fake(BaseHTTPRequestHandler):
     def do_POST(self):
         seen["path"] = self.path
         seen["req"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if seen["req"].get("tools") and ":streamGenerateContent" in self.path:
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+            for c in ({"candidates": [{"content": {"parts": [{"text": "plan", "thought": True}]}}]},
+                      {"candidates": [{"content": {"parts": [{"functionCall": {"name": "reply", "args": {"text": "long reply"}}}]},
+                                       "finishReason": "STOP"}]}):
+                self.wfile.write(f"data: {json.dumps(c)}\n\n".encode()); self.wfile.flush()
+            return
         if ":streamGenerateContent" in self.path:
             assert "alt=sse" in self.path
             self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
@@ -51,7 +58,7 @@ try:
         except OSError:
             time.sleep(0.1)
     code, out = req("/models")
-    assert code == 200 and json.loads(out)["data"][0]["id"] == "gemini-x", out
+    assert code == 200 and [m["id"] for m in json.loads(out)["data"]] == ["gemini-x", "gemini-x-tool"], out
     assert req("/models", key="nope")[0] == 401
     msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "a"},
             {"role": "user", "content": [{"type": "text", "text": "b"}]}, {"role": "assistant", "content": "c"}]
@@ -67,7 +74,18 @@ try:
     assert g["generationConfig"]["maxOutputTokens"] == 9
     code, out = req("/chat/completions", {"model": "gemini-x", "messages": msgs, "stream": True})
     assert code == 200 and seen["path"].startswith("/v1beta/models/gemini-x:streamGenerateContent"), out
-    assert '"content": "h"' in out and '"content": "i"' in out and ": thinking" in out and "hmm" not in out, out
+    assert '"content": "h"' in out and '"content": "i"' in out and '"reasoning_content": "hmm"' in out, out
+    assert '"content": "hmm"' not in out and "tools" not in seen["req"], out
+    o = json.loads(req("/chat/completions", {"model": "gemini-x", "messages": msgs})[1])
+    assert o["choices"][0]["message"]["reasoning_content"] == "hmm", o
+    code, out = req("/chat/completions", {"model": "gemini-x-tool", "messages": msgs, "stream": True,
+                                          "reasoning_effort": "high"})
+    g = seen["req"]
+    assert seen["path"].startswith("/v1beta/models/gemini-x:streamGenerateContent"), seen["path"]
+    assert g["toolConfig"]["functionCallingConfig"]["mode"] == "ANY" and g["tools"][0]["functionDeclarations"][0]["name"] == "reply"
+    assert "reply(text=" in g["systemInstruction"]["parts"][-1]["text"]
+    assert g["generationConfig"]["thinkingConfig"] == {"includeThoughts": True, "thinkingLevel": "HIGH"}
+    assert '"reasoning_content": "plan"' in out and '"content": "long reply"' in out, out
     assert '"finish_reason": "stop"' in out and out.rstrip().endswith("data: [DONE]"), out
     r = urllib.request.Request(B + "/models", method="OPTIONS",
                                headers={"Origin": "http://127.0.0.1:8000", "Access-Control-Request-Method": "GET",
