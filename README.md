@@ -1,5 +1,13 @@
 # aistudio-oai-bridge
 
+> **以后只在 [uncut-bridge](https://github.com/meowmana/uncut-bridge) 更新。** 两边现在代码一样，装了这一版的换过去不用重装，Termux 菜单按 0 退到 `~ $` 粘这一行就换好了，自启那行不用动：
+>
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/meowmana/uncut-bridge/main/oai-bridge.py -o ~/oai-bridge.new && mv ~/oai-bridge.new ~/oai-bridge.py && pkill -f oai-bridge.py; sleep 1; nohup ~/aistudio-api/.venv/bin/python ~/oai-bridge.py >~/oai-bridge.log 2>&1 &
+> ```
+>
+> 电脑上：从 uncut-bridge 重新下 `oai-bridge.py` 覆盖旧文件，照常启动。
+
 给 [aistudio-api](https://github.com/DeconstructedCube/aistudio-api) 套一层 OpenAI 格式的翻译，让只认 OpenAI 接口的酒馆插件（比如写摘要的）也能用上它。
 
 - 只用 Python 自带的库，一个文件，不用装任何东西
